@@ -9,7 +9,11 @@ Optionally create a `config.json` in the working directory:
 ```json
 {
   "base_url": "http://localhost:3000",
-  "poll_interval_sec": 5
+  "poll_interval_sec": 5,
+  "images": {
+    "uploader": "none",
+    "imgur_client_id": ""
+  }
 }
 ```
 

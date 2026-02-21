@@ -20,14 +20,29 @@ import (
 	"github.com/RafaeloxMC/richer-go/client"
 )
 
+type ImageUploader string
+
+const (
+	UploaderNone      ImageUploader = "none"
+	UploaderLitterbox ImageUploader = "litterbox"
+	UploaderImgur     ImageUploader = "imgur"
+)
+
+type ImageConfig struct {
+	Uploader      ImageUploader `json:"uploader"`
+	ImgurClientID string        `json:"imgur_client_id"`
+}
+
 type Config struct {
-	BaseURL         string `json:"base_url"`
-	PollIntervalSec int    `json:"poll_interval_sec"`
+	BaseURL         string      `json:"base_url"`
+	PollIntervalSec int         `json:"poll_interval_sec"`
+	Images          ImageConfig `json:"images"`
 }
 
 var config = Config{
 	BaseURL:         "http://localhost:3000",
 	PollIntervalSec: 5,
+	Images:          ImageConfig{Uploader: UploaderNone},
 }
 
 func loadConfig(path string) error {
@@ -68,6 +83,10 @@ type Track struct {
 var coverCache = map[int]string{}
 
 func uploadCover(albumID int) (string, error) {
+	if config.Images.Uploader == UploaderNone {
+		return "", fmt.Errorf("image uploads disabled")
+	}
+
 	if url, ok := coverCache[albumID]; ok {
 		return url, nil
 	}
@@ -82,6 +101,27 @@ func uploadCover(albumID int) (string, error) {
 		return "", fmt.Errorf("cover API returned status %d", resp.StatusCode)
 	}
 
+	var imageData bytes.Buffer
+	if _, err := io.Copy(&imageData, resp.Body); err != nil {
+		return "", err
+	}
+
+	var url string
+	switch config.Images.Uploader {
+	case UploaderImgur:
+		url, err = uploadToImgur(&imageData)
+	default:
+		url, err = uploadToLitterbox(&imageData)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	coverCache[albumID] = url
+	return url, nil
+}
+
+func uploadToLitterbox(image *bytes.Buffer) (string, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	writer.WriteField("reqtype", "fileupload")
@@ -91,12 +131,12 @@ func uploadCover(albumID int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(part, resp.Body); err != nil {
+	if _, err := io.Copy(part, image); err != nil {
 		return "", err
 	}
 	writer.Close()
 
-	upload, err := http.Post(
+	resp, err := http.Post(
 		"https://litterbox.catbox.moe/resources/internals/api.php",
 		writer.FormDataContentType(),
 		&body,
@@ -104,16 +144,57 @@ func uploadCover(albumID int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer upload.Body.Close()
+	defer resp.Body.Close()
 
-	urlBytes, err := io.ReadAll(upload.Body)
+	urlBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
 
-	url := strings.TrimSpace(string(urlBytes))
-	coverCache[albumID] = url
-	return url, nil
+	return strings.TrimSpace(string(urlBytes)), nil
+}
+
+func uploadToImgur(image *bytes.Buffer) (string, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	writer.WriteField("type", "file")
+
+	part, err := writer.CreateFormFile("image", "cover.jpg")
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(part, image); err != nil {
+		return "", err
+	}
+	writer.Close()
+
+	req, err := http.NewRequest("POST", "https://api.imgur.com/3/image", &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Client-ID "+config.Images.ImgurClientID)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("imgur API returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Data struct {
+			Link string `json:"link"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	return result.Data.Link, nil
 }
 
 func fetchActivePlayback() (*Playback, error) {
@@ -162,6 +243,10 @@ func main() {
 		if !os.IsNotExist(err) {
 			log.Fatalf("Error loading config: %v", err)
 		}
+	}
+
+	if config.Images.Uploader == UploaderImgur && config.Images.ImgurClientID == "" {
+		log.Fatal("imgur client_id is required when image_uploader is set to \"imgur\"")
 	}
 
 	err := client.Login("1474543583473176846")
