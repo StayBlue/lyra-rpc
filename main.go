@@ -55,34 +55,37 @@ func loadConfig(path string) error {
 }
 
 type Playback struct {
-	PlaybackID int    `json:"playback_id"`
-	TrackID    int    `json:"track_id"`
-	State      string `json:"state"`
-	PositionMs int64  `json:"position_ms"`
-	DurationMs int64  `json:"duration_ms"`
+	PlaybackID  int64  `json:"playback_id"`
+	TrackID     int64  `json:"track_id"`
+	UserID      int64  `json:"user_id"`
+	PositionMs  int64  `json:"position_ms"`
+	State       string `json:"state"`
+	ActivityMs  int64  `json:"activity_ms"`
+	UpdatedAtMs int64  `json:"updated_at_ms"`
+	DurationMs  *int64 `json:"duration_ms"`
 }
 
 type Artist struct {
-	DbID       int    `json:"db_id"`
+	DbID       int64  `json:"db_id"`
 	ArtistName string `json:"artist_name"`
 }
 
 type Album struct {
-	DbID       int    `json:"db_id"`
+	DbID       int64  `json:"db_id"`
 	AlbumTitle string `json:"album_title"`
 	Year       int    `json:"year"`
 }
 
 type Track struct {
-	DbID    int      `json:"db_id"`
+	DbID    int64    `json:"db_id"`
 	Title   string   `json:"title"`
 	Artists []Artist `json:"artists"`
 	Albums  []Album  `json:"albums"`
 }
 
-var coverCache = map[int]string{}
+var coverCache = map[int64]string{}
 
-func uploadCover(albumID int) (string, error) {
+func uploadCover(albumID int64) (string, error) {
 	if config.Images.Uploader == UploaderNone {
 		return "", fmt.Errorf("image uploads disabled")
 	}
@@ -219,7 +222,7 @@ func fetchActivePlayback() (*Playback, error) {
 	return &result[0], nil
 }
 
-func fetchTrack(id int) (*Track, error) {
+func fetchTrack(id int64) (*Track, error) {
 	resp, err := http.Get(fmt.Sprintf("%s/api/tracks/%d?inc=albums,artists", config.BaseURL, id))
 	if err != nil {
 		return nil, err
@@ -260,7 +263,7 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 
-	var lastTrackID int
+	var lastTrackID int64
 	var lastState string
 	var lastPositionMs int64
 	var cachedTrack *Track
@@ -351,9 +354,17 @@ func main() {
 		}
 
 		if playback.State == "playing" {
-			start := time.Now().Add(-time.Duration(playback.PositionMs) * time.Millisecond)
-			end := start.Add(time.Duration(playback.DurationMs) * time.Millisecond)
-			activity.Timestamps = &client.Timestamps{Start: &start, End: &end}
+			nowMs := time.Now().UnixMilli()
+			effectiveMs := playback.PositionMs + (nowMs - playback.UpdatedAtMs)
+			if playback.DurationMs != nil && effectiveMs > *playback.DurationMs {
+				effectiveMs = *playback.DurationMs
+			}
+			start := time.Now().Add(-time.Duration(effectiveMs) * time.Millisecond)
+			activity.Timestamps = &client.Timestamps{Start: &start}
+			if playback.DurationMs != nil {
+				end := start.Add(time.Duration(*playback.DurationMs) * time.Millisecond)
+				activity.Timestamps.End = &end
+			}
 			activity.SmallImage = "playing"
 			activity.SmallText = "Playing"
 		} else {
