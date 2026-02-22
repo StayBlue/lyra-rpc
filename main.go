@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/RafaeloxMC/richer-go/client"
@@ -261,7 +262,7 @@ func main() {
 	log.Println("Rich presence is running. Press Ctrl+C to exit.")
 
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 
 	var lastTrackID int64
 	var lastState string
