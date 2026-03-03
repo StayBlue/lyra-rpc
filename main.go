@@ -56,37 +56,39 @@ func loadConfig(path string) error {
 }
 
 type Playback struct {
-	PlaybackID  int64  `json:"playback_id"`
-	TrackID     int64  `json:"track_id"`
-	UserID      int64  `json:"user_id"`
-	PositionMs  int64  `json:"position_ms"`
-	State       string `json:"state"`
-	ActivityMs  int64  `json:"activity_ms"`
-	UpdatedAtMs int64  `json:"updated_at_ms"`
-	DurationMs  *int64 `json:"duration_ms"`
+	PlaybackSessionID   string `json:"playback_session_id"`
+	TrackID             string `json:"track_id"`
+	UserID              string `json:"user_id"`
+	PositionMs          int64  `json:"position_ms"`
+	EffectivePositionMs int64  `json:"effective_position_ms"`
+	State               string `json:"state"`
+	ActivityMs          int64  `json:"activity_ms"`
+	UpdatedAtMs         int64  `json:"updated_at_ms"`
+	DurationMs          *int64 `json:"duration_ms"`
 }
 
 type Artist struct {
-	DbID       int64  `json:"db_id"`
-	ArtistName string `json:"artist_name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type Album struct {
-	DbID       int64  `json:"db_id"`
-	AlbumTitle string `json:"album_title"`
-	Year       int    `json:"year"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Year  *int   `json:"year"`
 }
 
 type Track struct {
-	DbID    int64    `json:"db_id"`
+	ID      string   `json:"id"`
 	Title   string   `json:"title"`
 	Artists []Artist `json:"artists"`
 	Albums  []Album  `json:"albums"`
 }
 
-var coverCache = map[int64]string{}
+var coverCache = map[string]string{}
+var missingCoverCache = map[string]bool{}
 
-func uploadCover(albumID int64) (string, error) {
+func uploadCover(albumID string) (string, error) {
 	if config.Images.Uploader == UploaderNone {
 		return "", fmt.Errorf("image uploads disabled")
 	}
@@ -94,13 +96,20 @@ func uploadCover(albumID int64) (string, error) {
 	if url, ok := coverCache[albumID]; ok {
 		return url, nil
 	}
+	if missingCoverCache[albumID] {
+		return "", nil
+	}
 
-	resp, err := http.Get(fmt.Sprintf("%s/api/albums/%d/cover", config.BaseURL, albumID))
+	resp, err := http.Get(fmt.Sprintf("%s/api/albums/%s/cover", config.BaseURL, albumID))
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		missingCoverCache[albumID] = true
+		return "", nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("cover API returned status %d", resp.StatusCode)
 	}
@@ -202,14 +211,14 @@ func uploadToImgur(image *bytes.Buffer) (string, error) {
 }
 
 func fetchActivePlayback() (*Playback, error) {
-	resp, err := http.Get(config.BaseURL + "/api/playbacks?active=true")
+	resp, err := http.Get(config.BaseURL + "/api/playback-sessions?active=true")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("playbacks API returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("playback sessions API returned status %d", resp.StatusCode)
 	}
 
 	var result []Playback
@@ -223,8 +232,8 @@ func fetchActivePlayback() (*Playback, error) {
 	return &result[0], nil
 }
 
-func fetchTrack(id int64) (*Track, error) {
-	resp, err := http.Get(fmt.Sprintf("%s/api/tracks/%d?inc=albums,artists", config.BaseURL, id))
+func fetchTrack(id string) (*Track, error) {
+	resp, err := http.Get(fmt.Sprintf("%s/api/tracks/%s?inc=albums,artists", config.BaseURL, id))
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +273,7 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 
-	var lastTrackID int64
+	var lastTrackID string
 	var lastState string
 	var lastPositionMs int64
 	var cachedTrack *Track
@@ -279,6 +288,7 @@ func main() {
 			log.Printf("Error fetching playback: %v", err)
 			return
 		}
+		snapshotNow := time.Now()
 
 		if playback == nil || (playback.State != "playing" && playback.State != "paused") {
 			if lastState != "" {
@@ -288,7 +298,7 @@ func main() {
 					log.Println("No active playback, cleared presence.")
 				}
 			}
-			lastTrackID = 0
+			lastTrackID = ""
 			lastState = ""
 			cachedTrack = nil
 			cachedImage = ""
@@ -309,16 +319,16 @@ func main() {
 
 			cachedImage = "logo-dark"
 			if len(track.Albums) > 0 {
-				if url, err := uploadCover(track.Albums[0].DbID); err != nil {
+				if url, err := uploadCover(track.Albums[0].ID); err != nil {
 					log.Printf("Error uploading cover: %v", err)
-				} else {
+				} else if url != "" {
 					cachedImage = url
 				}
 			}
 
 			artistNames := make([]string, len(track.Artists))
 			for i, a := range track.Artists {
-				artistNames[i] = a.ArtistName
+				artistNames[i] = a.Name
 			}
 			stateLabel := "Playing"
 			if playback.State == "paused" {
@@ -335,7 +345,7 @@ func main() {
 
 		artistNames := make([]string, len(cachedTrack.Artists))
 		for i, a := range cachedTrack.Artists {
-			artistNames[i] = a.ArtistName
+			artistNames[i] = a.Name
 		}
 
 		activity := client.Activity{
@@ -347,20 +357,23 @@ func main() {
 
 		if len(cachedTrack.Albums) > 0 {
 			album := cachedTrack.Albums[0]
-			if album.Year != 0 {
-				activity.State = fmt.Sprintf("%s (%d)", album.AlbumTitle, album.Year)
+			if album.Year != nil && *album.Year != 0 {
+				activity.State = fmt.Sprintf("%s (%d)", album.Title, *album.Year)
 			} else {
-				activity.State = album.AlbumTitle
+				activity.State = album.Title
 			}
 		}
 
 		if playback.State == "playing" {
-			nowMs := time.Now().UnixMilli()
-			effectiveMs := playback.PositionMs + (nowMs - playback.UpdatedAtMs)
+			// Prefer the server-extrapolated position, which avoids RPC/server clock skew drift.
+			effectiveMs := playback.EffectivePositionMs
+			if effectiveMs <= 0 {
+				effectiveMs = playback.PositionMs
+			}
 			if playback.DurationMs != nil && effectiveMs > *playback.DurationMs {
 				effectiveMs = *playback.DurationMs
 			}
-			start := time.Now().Add(-time.Duration(effectiveMs) * time.Millisecond)
+			start := snapshotNow.Add(-time.Duration(effectiveMs) * time.Millisecond)
 			activity.Timestamps = &client.Timestamps{Start: &start}
 			if playback.DurationMs != nil {
 				end := start.Add(time.Duration(*playback.DurationMs) * time.Millisecond)
