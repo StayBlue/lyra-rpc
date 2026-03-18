@@ -278,6 +278,7 @@ func main() {
 	var lastPositionMs int64
 	var cachedTrack *Track
 	var cachedImage string
+	var playbackFetchFailed bool
 
 	ticker := time.NewTicker(time.Duration(config.PollIntervalSec) * time.Second)
 	defer ticker.Stop()
@@ -285,9 +286,13 @@ func main() {
 	poll := func() {
 		playback, err := fetchActivePlayback()
 		if err != nil {
-			log.Printf("Error fetching playback: %v", err)
+			if !playbackFetchFailed {
+				log.Printf("Error fetching playback: %v", err)
+				playbackFetchFailed = true
+			}
 			return
 		}
+		playbackFetchFailed = false
 		snapshotNow := time.Now()
 
 		if playback == nil || (playback.State != "playing" && playback.State != "paused") {
