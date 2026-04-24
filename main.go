@@ -12,6 +12,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -36,6 +37,7 @@ type ImageConfig struct {
 
 type Config struct {
 	BaseURL         string      `json:"base_url"`
+	AuthToken       string      `json:"auth_token"`
 	PollIntervalSec int         `json:"poll_interval_sec"`
 	Images          ImageConfig `json:"images"`
 }
@@ -72,42 +74,53 @@ type Artist struct {
 	Name string `json:"name"`
 }
 
-type Album struct {
+type Release struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	Year  *int   `json:"year"`
 }
 
 type Track struct {
-	ID      string   `json:"id"`
-	Title   string   `json:"title"`
-	Artists []Artist `json:"artists"`
-	Albums  []Album  `json:"albums"`
+	ID       string    `json:"id"`
+	Title    string    `json:"title"`
+	Artists  []Artist  `json:"artists"`
+	Releases []Release `json:"releases"`
 }
 
 var coverCache = map[string]string{}
 var missingCoverCache = map[string]bool{}
 
-func uploadCover(albumID string) (string, error) {
+func lyraGet(path string) (*http.Response, error) {
+	req, err := http.NewRequest("GET", strings.TrimRight(config.BaseURL, "/")+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if config.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+config.AuthToken)
+	}
+	return http.DefaultClient.Do(req)
+}
+
+func uploadCover(releaseID string) (string, error) {
 	if config.Images.Uploader == UploaderNone {
 		return "", fmt.Errorf("image uploads disabled")
 	}
 
-	if url, ok := coverCache[albumID]; ok {
+	if url, ok := coverCache[releaseID]; ok {
 		return url, nil
 	}
-	if missingCoverCache[albumID] {
+	if missingCoverCache[releaseID] {
 		return "", nil
 	}
 
-	resp, err := http.Get(fmt.Sprintf("%s/api/albums/%s/cover", config.BaseURL, albumID))
+	resp, err := lyraGet(fmt.Sprintf("/api/releases/%s/cover", url.PathEscape(releaseID)))
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		missingCoverCache[albumID] = true
+		missingCoverCache[releaseID] = true
 		return "", nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -130,7 +143,7 @@ func uploadCover(albumID string) (string, error) {
 		return "", err
 	}
 
-	coverCache[albumID] = url
+	coverCache[releaseID] = url
 	return url, nil
 }
 
@@ -211,7 +224,7 @@ func uploadToImgur(image *bytes.Buffer) (string, error) {
 }
 
 func fetchActivePlayback() (*Playback, error) {
-	resp, err := http.Get(config.BaseURL + "/api/playback-sessions?active=true")
+	resp, err := lyraGet("/api/playback-sessions?active=true")
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +246,7 @@ func fetchActivePlayback() (*Playback, error) {
 }
 
 func fetchTrack(id string) (*Track, error) {
-	resp, err := http.Get(fmt.Sprintf("%s/api/tracks/%s?inc=albums,artists", config.BaseURL, id))
+	resp, err := lyraGet(fmt.Sprintf("/api/tracks/%s?inc=releases,artists", url.PathEscape(id)))
 	if err != nil {
 		return nil, err
 	}
@@ -323,8 +336,8 @@ func main() {
 			cachedTrack = track
 
 			cachedImage = "logo-dark"
-			if len(track.Albums) > 0 {
-				if url, err := uploadCover(track.Albums[0].ID); err != nil {
+			if len(track.Releases) > 0 {
+				if url, err := uploadCover(track.Releases[0].ID); err != nil {
 					log.Printf("Error uploading cover: %v", err)
 				} else if url != "" {
 					cachedImage = url
@@ -360,12 +373,12 @@ func main() {
 			LargeText:  strings.Join(artistNames, ", "),
 		}
 
-		if len(cachedTrack.Albums) > 0 {
-			album := cachedTrack.Albums[0]
-			if album.Year != nil && *album.Year != 0 {
-				activity.State = fmt.Sprintf("%s (%d)", album.Title, *album.Year)
+		if len(cachedTrack.Releases) > 0 {
+			release := cachedTrack.Releases[0]
+			if release.Year != nil && *release.Year != 0 {
+				activity.State = fmt.Sprintf("%s (%d)", release.Title, *release.Year)
 			} else {
-				activity.State = album.Title
+				activity.State = release.Title
 			}
 		}
 
