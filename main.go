@@ -75,9 +75,9 @@ type Artist struct {
 }
 
 type Release struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Year  *int   `json:"year"`
+	ID          string  `json:"id"`
+	Title       string  `json:"title"`
+	ReleaseDate *string `json:"release_date"`
 }
 
 type Track struct {
@@ -264,6 +264,20 @@ func fetchTrack(id string) (*Track, error) {
 	return &result, nil
 }
 
+func releaseYear(release Release) string {
+	if release.ReleaseDate == nil || len(*release.ReleaseDate) < 4 {
+		return ""
+	}
+
+	year := (*release.ReleaseDate)[:4]
+	for _, r := range year {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return year
+}
+
 func main() {
 	if err := loadConfig("config.json"); err != nil {
 		if !os.IsNotExist(err) {
@@ -375,8 +389,8 @@ func main() {
 
 		if len(cachedTrack.Releases) > 0 {
 			release := cachedTrack.Releases[0]
-			if release.Year != nil && *release.Year != 0 {
-				activity.State = fmt.Sprintf("%s (%d)", release.Title, *release.Year)
+			if year := releaseYear(release); year != "" {
+				activity.State = fmt.Sprintf("%s (%s)", release.Title, year)
 			} else {
 				activity.State = release.Title
 			}
