@@ -1,6 +1,6 @@
 # Lyra Discord Rich Presence
 
-A Discord Rich Presence client implementation for Lyra, a work-in-progress and unreleased music server. Shows the currently playing track, album, artist, and cover art.
+A Discord Rich Presence client implementation for [Lyra](https://git.lyra.pub/lyra/lyra), a work-in-progress music server. Shows the currently playing track, album, artist, and cover art.
 
 ## Usage
 
