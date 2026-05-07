@@ -44,7 +44,7 @@ type Config struct {
 }
 
 var config = Config{
-	BaseURL:         "http://localhost:3000",
+	BaseURL:         "http://localhost:4746",
 	PollIntervalSec: 5,
 	Images:          ImageConfig{Uploader: UploaderNone},
 }
@@ -71,8 +71,15 @@ type Playback struct {
 }
 
 type Artist struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID     string        `json:"id"`
+	Name   string        `json:"name"`
+	Credit *ArtistCredit `json:"credit"`
+}
+
+type ArtistCredit struct {
+	Type   string  `json:"type"`
+	Detail *string `json:"detail"`
+	Source string  `json:"source"`
 }
 
 type Release struct {
@@ -225,29 +232,46 @@ func uploadToImgur(image *bytes.Buffer) (string, error) {
 }
 
 func fetchActivePlayback() (*Playback, error) {
-	resp, err := lyraGet("/api/playback-sessions?active=true")
+	playbacks, status, err := fetchPlaybackSessions("/api/playback-sessions/active")
 	if err != nil {
-		return nil, err
+		if status != http.StatusNotFound && status != http.StatusMethodNotAllowed {
+			return nil, err
+		}
+
+		playbacks, _, err = fetchPlaybackSessions("/api/playback-sessions?active=true")
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if len(playbacks) == 0 {
+		return nil, nil
+	}
+	return &playbacks[0], nil
+}
+
+func fetchPlaybackSessions(path string) ([]Playback, int, error) {
+	resp, err := lyraGet(path)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("playback sessions API returned status %d", resp.StatusCode)
+		return nil, resp.StatusCode, fmt.Errorf("playback sessions API returned status %d", resp.StatusCode)
 	}
 
 	var result []Playback
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, resp.StatusCode, err
 	}
 
-	if len(result) == 0 {
-		return nil, nil
-	}
-	return &result[0], nil
+	return result, resp.StatusCode, nil
 }
 
 func fetchTrack(id string) (*Track, error) {
-	resp, err := lyraGet(fmt.Sprintf("/api/tracks/%s?inc=releases,artists", url.PathEscape(id)))
+	query := url.Values{"inc": []string{"releases", "artists"}}
+	resp, err := lyraGet(fmt.Sprintf("/api/tracks/%s?%s", url.PathEscape(id), query.Encode()))
 	if err != nil {
 		return nil, err
 	}
@@ -279,6 +303,33 @@ func releaseYear(release Release) string {
 	return year
 }
 
+func displayArtistNames(artists []Artist) []string {
+	names := filteredArtistNames(artists, true)
+	if len(names) > 0 {
+		return names
+	}
+	return filteredArtistNames(artists, false)
+}
+
+func filteredArtistNames(artists []Artist, primaryOnly bool) []string {
+	names := make([]string, 0, len(artists))
+	seen := make(map[string]bool, len(artists))
+	for _, artist := range artists {
+		if artist.Name == "" {
+			continue
+		}
+		if primaryOnly && (artist.Credit == nil || artist.Credit.Type != "artist") {
+			continue
+		}
+		if seen[artist.Name] {
+			continue
+		}
+		seen[artist.Name] = true
+		names = append(names, artist.Name)
+	}
+	return names
+}
+
 func main() {
 	if err := loadConfig("config.json"); err != nil {
 		if !os.IsNotExist(err) {
@@ -287,7 +338,7 @@ func main() {
 	}
 
 	if config.Images.Uploader == UploaderImgur && config.Images.ImgurClientID == "" {
-		log.Fatal("imgur client_id is required when image_uploader is set to \"imgur\"")
+		log.Fatal("images.imgur_client_id is required when images.uploader is set to \"imgur\"")
 	}
 
 	err := client.Login("1474543583473176846")
@@ -359,10 +410,7 @@ func main() {
 				}
 			}
 
-			artistNames := make([]string, len(track.Artists))
-			for i, a := range track.Artists {
-				artistNames[i] = a.Name
-			}
+			artistNames := displayArtistNames(track.Artists)
 			stateLabel := "Playing"
 			if playback.State == "paused" {
 				stateLabel = "Paused"
@@ -376,10 +424,7 @@ func main() {
 			log.Printf("%s: %s", stateLabel, cachedTrack.Title)
 		}
 
-		artistNames := make([]string, len(cachedTrack.Artists))
-		for i, a := range cachedTrack.Artists {
-			artistNames[i] = a.Name
-		}
+		artistNames := displayArtistNames(cachedTrack.Artists)
 
 		activity := client.Activity{
 			Type:       client.ActivityListening,

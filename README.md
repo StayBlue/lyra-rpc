@@ -11,7 +11,7 @@ go build && ./lyra-rpc
 Optionally create a `config.json` in the working directory:
 ```json
 {
-  "base_url": "http://localhost:3000",
+  "base_url": "http://localhost:4746",
   "auth_token": "",
   "poll_interval_sec": 5,
   "images": {
