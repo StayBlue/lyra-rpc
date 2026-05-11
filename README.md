@@ -4,11 +4,23 @@ A Discord Rich Presence client implementation for [Lyra](https://git.lyra.pub/ly
 
 ## Usage
 
+Requires Zig 0.16.0.
+
+Run from source:
+
 ```sh
-go build && ./lyra-rpc
+zig build run
+```
+
+Build an optimized executable:
+
+```sh
+zig build -Doptimize=ReleaseSmall
+./zig-out/bin/lyra_rpc
 ```
 
 Optionally create a `config.json` in the working directory:
+
 ```json
 {
   "base_url": "http://localhost:4746",
@@ -20,6 +32,8 @@ Optionally create a `config.json` in the working directory:
   }
 }
 ```
+
+`images.uploader` may be `none`, `litterbox`, or `imgur`. Set `images.imgur_client_id` when using `imgur`.
 
 ## License
 

@@ -1,2 +1,5 @@
-lyra-rpc
+.zig-cache
+zig-out
 config.json
+
+.DS_Store
